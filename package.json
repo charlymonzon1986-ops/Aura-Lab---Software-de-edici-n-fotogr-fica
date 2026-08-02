@@ -3,17 +3,18 @@
   "private": true,
   "version": "1.0.0",
   "description": "Aura Lab - Professional Lighting & Photo Editor Desktop Application",
-  "main": "electron/main.js",
+  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
+    "build:server": "esbuild server.ts --bundle --platform=node --target=node18 --outfile=dist-server/server.cjs --format=cjs --external:sharp --external:firebase-admin --external:electron",
+    "build": "vite build && npm run build:server",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist dist-server dist_electron",
     "lint": "tsc --noEmit",
     "electron": "electron .",
     "electron:dev": "NODE_ENV=development electron .",
-    "dist": "vite build && electron-builder --win"
+    "dist": "npm run build && electron-builder --win"
   },
   "build": {
     "appId": "com.auralab.editor",
@@ -23,6 +24,7 @@
     },
     "files": [
       "dist/**/*",
+      "dist-server/**/*",
       "electron/**/*",
       "public/**/*"
     ],
@@ -77,6 +79,8 @@
     "autoprefixer": "^10.4.21",
     "electron": "^43.2.0",
     "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.1",
+    "sharp": "^0.35.3",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",

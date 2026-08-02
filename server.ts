@@ -7,15 +7,18 @@ import fs from "fs";
 import { MercadoPagoConfig, Preference, Payment } from 'mercadopago';
 import admin from "firebase-admin";
 
-// Initialize Firebase Admin
+// Initialize Firebase Admin safely
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.applicationDefault(), // This works in Cloud Run
-    // If not in Cloud Run, it might fail, but we'll handle it
-  });
+  try {
+    admin.initializeApp({
+      credential: admin.credential.applicationDefault(),
+    });
+  } catch (err) {
+    console.warn("Firebase Admin initialized without default credentials:", err);
+  }
 }
 
-const db = admin.firestore();
+const db = admin.apps.length ? admin.firestore() : null;
 
 async function startServer() {
   const app = express();
@@ -23,6 +26,16 @@ async function startServer() {
 
   app.use(express.json());
   app.use(cors());
+
+  // Health check endpoint
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok" });
+  });
+
+  // Config endpoint for Gemini
+  app.get("/api/config/gemini", (req, res) => {
+    res.json({ apiKey: process.env.GEMINI_API_KEY || "" });
+  });
 
   // Ensure uploads directory exists
   const uploadsDir = path.join(process.cwd(), "public", "uploads");
@@ -44,7 +57,7 @@ async function startServer() {
 
   // Mercado Pago Configuration
   const client = new MercadoPagoConfig({ 
-    accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN || 'APP_USR-5903334937452237-040918-dd01c9c0d5a71c54abb5df59dd4e231e-3326778756' 
+    accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN || '' 
   });
 
   // API Routes
