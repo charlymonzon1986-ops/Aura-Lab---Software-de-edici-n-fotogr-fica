@@ -118,7 +118,7 @@ async function startServer() {
           const userId = paymentData.external_reference;
           const planName = paymentData.additional_info?.items?.[0]?.id?.toLowerCase() || 'pro';
 
-          if (userId) {
+          if (userId && db) {
             console.log(`Updating plan for user ${userId} to ${planName}`);
             const userRef = db.collection("users").doc(userId);
             await userRef.update({
