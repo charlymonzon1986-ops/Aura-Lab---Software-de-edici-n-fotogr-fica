@@ -1,4 +1,4 @@
-import { LightingSettings } from "@/src/types";
+import { LightingSettings, DEFAULT_SETTINGS } from "@/src/types";
 
 /**
  * Applies real photographic pixel manipulation to an ImageData object.
@@ -134,17 +134,16 @@ export function processImagePixels(imageData: ImageData, settings: LightingSetti
 /**
  * Draws the source image to target canvas with real pixel manipulation applied.
  */
-export function renderProcessedToCanvas(
+export async function renderProcessedToCanvas(
   img: HTMLImageElement,
   canvas: HTMLCanvasElement,
   settings: LightingSettings,
-  maxWidth = 1920,
-  maxHeight = 1080
-) {
+  maxWidth = 0,
+  maxHeight = 0
+): Promise<void> {
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return;
 
-  // Scale down if image is huge for preview performance, or use natural size for export
   let targetWidth = img.naturalWidth || img.width;
   let targetHeight = img.naturalHeight || img.height;
 
@@ -153,48 +152,76 @@ export function renderProcessedToCanvas(
     targetWidth = maxWidth;
     targetHeight = Math.round(targetHeight * scale);
   }
-
   if (maxHeight > 0 && targetHeight > maxHeight) {
     const scale = maxHeight / targetHeight;
     targetHeight = maxHeight;
     targetWidth = Math.round(targetWidth * scale);
   }
 
-  if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-  }
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
 
-  try {
-    // Draw base image
-    ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+  ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+  const rawData = ctx.getImageData(0, 0, targetWidth, targetHeight);
 
-    // Get raw pixel buffer
-    const rawData = ctx.getImageData(0, 0, targetWidth, targetHeight);
-
-    // Process raw pixels
-    const processedData = processImagePixels(rawData, settings);
-
-    // Write processed pixels back to canvas
-    ctx.putImageData(processedData, 0, 0);
-  } catch (err) {
-    // Fallback if canvas is tainted by cross-origin security restrictions
-    ctx.filter = getFilterString(settings);
-    ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-  }
+  return new Promise((resolve, reject) => {
+    const worker = new Worker('/imageWorker.js');
+    
+    worker.onmessage = (e) => {
+      ctx.putImageData(e.data.imageData, 0, 0);
+      worker.terminate();
+      resolve();
+    };
+    
+    worker.onerror = (err) => {
+      worker.terminate();
+      // Fallback sincrónico si el worker falla
+      const processed = processImagePixels(rawData, settings);
+      ctx.putImageData(processed, 0, 0);
+      resolve();
+    };
+    
+    // Transferir el buffer al worker (zero-copy, muy rápido)
+    worker.postMessage(
+      { imageData: rawData, settings },
+      [rawData.data.buffer]
+    );
+  });
 }
 
 export function getFilterString(settings: LightingSettings): string {
-  const { brightness, contrast, saturation, exposure, warmth, tint } = settings;
-  const effectiveBrightness = (brightness / 100) * (1 + exposure / 100);
-  const sepia = warmth > 0 ? warmth / 100 : 0;
-  const hueRotate = tint;
+  const safe = { ...DEFAULT_SETTINGS, ...(settings || {}) };
+  const brightness = safe.brightness ?? 100;
+  const contrast = safe.contrast ?? 100;
+  const saturation = safe.saturation ?? 100;
+  const exposure = safe.exposure ?? 0;
+  const warmth = safe.warmth ?? 0;
+  const tint = safe.tint ?? 0;
+  const vibrance = safe.vibrance ?? 100;
+  const highlights = safe.highlights ?? 100;
+  const shadows = safe.shadows ?? 100;
+  const clarity = safe.clarity ?? 0;
 
-  return `
-    brightness(${effectiveBrightness * 100}%) 
-    contrast(${contrast}%) 
-    saturate(${saturation}%) 
-    sepia(${sepia * 100}%) 
-    hue-rotate(${hueRotate}deg)
-  `.replace(/\s+/g, ' ').trim();
+  const expMult = Math.pow(2, exposure / 50);
+  const effectiveBrightness = (brightness / 100) * expMult;
+  const effectiveSaturation = (saturation / 100) * ((vibrance / 100) * 0.3 + 0.7);
+  
+  const highlightOffset = (highlights - 100) / 100 * 0.1;
+  const shadowOffset = (shadows - 100) / 100 * 0.08;
+  const combinedBrightness = effectiveBrightness + highlightOffset + shadowOffset;
+  
+  const clarityContrast = 1 + (clarity / 100) * 0.15;
+  const sepiaAmount = warmth > 0 ? (warmth / 100) * 0.2 : 0;
+  const hueShift = warmth < 0 ? (warmth / 100) * 12 : tint * 0.5;
+
+  const filters = [
+    `brightness(${(combinedBrightness * 100).toFixed(1)}%)`,
+    `contrast(${(contrast / 100 * clarityContrast * 100).toFixed(1)}%)`,
+    `saturate(${(effectiveSaturation * 100).toFixed(1)}%)`,
+  ];
+
+  if (sepiaAmount > 0) filters.push(`sepia(${(sepiaAmount * 100).toFixed(1)}%)`);
+  if (hueShift !== 0) filters.push(`hue-rotate(${hueShift.toFixed(1)}deg)`);
+
+  return filters.join(' ');
 }

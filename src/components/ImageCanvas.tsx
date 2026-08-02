@@ -1,6 +1,6 @@
 import * as React from "react";
 import { LightingSettings, DEFAULT_SETTINGS } from "@/src/types";
-import { renderProcessedToCanvas } from "@/src/lib/imageProcessing";
+import { getFilterString } from "@/src/lib/imageProcessing";
 import { ZoomIn, ZoomOut, Maximize2, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -12,7 +12,6 @@ interface ImageCanvasProps {
 }
 
 export function ImageCanvas({ imageUrl, title, settings }: ImageCanvasProps) {
-  const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const imgRef = React.useRef<HTMLImageElement | null>(null);
 
@@ -57,7 +56,7 @@ export function ImageCanvas({ imageUrl, title, settings }: ImageCanvasProps) {
     return () => observer.disconnect();
   }, []);
 
-  // Load Image Object
+  // Reset zoom & pan when imageUrl changes
   React.useEffect(() => {
     setIsLoaded(false);
     setZoom(1);
@@ -69,57 +68,16 @@ export function ImageCanvas({ imageUrl, title, settings }: ImageCanvasProps) {
         setContainerSize({ width: rect.width, height: rect.height });
       }
     }
-
-    let isMounted = true;
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-
-    const handleSuccess = (loadedImg: HTMLImageElement) => {
-      if (!isMounted) return;
-      imgRef.current = loadedImg;
-      setImgSize({
-        width: loadedImg.naturalWidth || loadedImg.width || 1200,
-        height: loadedImg.naturalHeight || loadedImg.height || 800,
-      });
-      setIsLoaded(true);
-    };
-
-    img.onload = () => handleSuccess(img);
-
-    img.onerror = () => {
-      // Fallback without crossOrigin if CORS rejected anonymous mode
-      const fallbackImg = new Image();
-      fallbackImg.onload = () => handleSuccess(fallbackImg);
-      fallbackImg.onerror = () => {
-        if (isMounted) setIsLoaded(true);
-      };
-      fallbackImg.src = imageUrl;
-    };
-
-    img.src = imageUrl;
-
-    return () => {
-      isMounted = false;
-    };
   }, [imageUrl]);
 
   // Active settings depending on comparison mode
   const activeSettings = isComparing ? DEFAULT_SETTINGS : settings;
 
-  // Render processed pixels onto canvas whenever activeSettings or image loads
   React.useEffect(() => {
-    if (!isLoaded || !imgRef.current || !canvasRef.current) return;
-
-    let animFrame: number;
-    const updateCanvas = () => {
-      if (imgRef.current && canvasRef.current) {
-        renderProcessedToCanvas(imgRef.current, canvasRef.current, activeSettings, 1920, 1080);
-      }
-    };
-
-    animFrame = requestAnimationFrame(updateCanvas);
-    return () => cancelAnimationFrame(animFrame);
-  }, [isLoaded, activeSettings]);
+    if (!isLoaded || !imgRef.current) return;
+    const img = imgRef.current as HTMLImageElement;
+    img.style.filter = getFilterString(activeSettings);
+  }, [activeSettings, isLoaded]);
 
   const resetZoom = React.useCallback(() => {
     setZoom(1);
@@ -239,15 +197,27 @@ export function ImageCanvas({ imageUrl, title, settings }: ImageCanvasProps) {
           transformOrigin: "center center"
         }}
       >
-        <canvas
-          ref={canvasRef}
-          className="shadow-2xl rounded-lg select-none object-contain transition-opacity duration-200"
+        <img
+          ref={imgRef as any}
+          src={imageUrl}
+          alt={title}
+          onLoad={(e) => {
+            const target = e.currentTarget;
+            setImgSize({
+              width: target.naturalWidth || target.width || 1200,
+              height: target.naturalHeight || target.height || 800,
+            });
+            setIsLoaded(true);
+          }}
+          className="shadow-2xl rounded-lg select-none object-contain"
           style={{
             display: isLoaded ? "block" : "none",
             width: fitDimensions ? `${fitDimensions.width}px` : "auto",
             height: fitDimensions ? `${fitDimensions.height}px` : "auto",
             maxWidth: "100%",
-            maxHeight: "100%"
+            maxHeight: "100%",
+            filter: getFilterString(activeSettings),
+            transition: "filter 0.05s ease-out"
           }}
         />
 

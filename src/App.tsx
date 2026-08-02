@@ -53,6 +53,7 @@ import axios from "axios";
 import { LightingControls } from "@/src/components/LightingControls";
 import { ImageCanvas } from "@/src/components/ImageCanvas";
 import { Histogram } from "@/src/components/Histogram";
+import { ExportModal, ExportOptions } from "@/src/components/ExportModal";
 import { Photo, DEFAULT_SETTINGS, LightingSettings } from "@/src/types";
 import { getFilterString, renderProcessedToCanvas } from "@/src/lib/imageProcessing";
 import { auth, db, storage, signInWithGoogle, logout } from "@/src/firebase";
@@ -113,6 +114,8 @@ export default function App() {
     resetZoom();
   }, [selectedPhotoId]);
   const [isAutoEnhancing, setIsAutoEnhancing] = React.useState(false);
+  const [showExportModal, setShowExportModal] = React.useState(false);
+  const [isExporting, setIsExporting] = React.useState(false);
   const [isUploading, setIsUploading] = React.useState(false);
   const [zoom, setZoom] = React.useState(1);
   const [pan, setPan] = React.useState({ x: 0, y: 0 });
@@ -226,10 +229,14 @@ export default function App() {
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedPhotos = snapshot.docs.map(doc => ({
-        ...doc.data(),
-        id: doc.id
-      })) as Photo[];
+      const fetchedPhotos = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          ...data,
+          id: doc.id,
+          settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) }
+        };
+      }) as Photo[];
       setPhotos(fetchedPhotos);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, "photos");
@@ -435,8 +442,8 @@ export default function App() {
   );
 
   const updatePhotoSettings = React.useCallback((id: string, settings: LightingSettings) => {
-    // Update local state for immediate feedback
-    setPhotos(prev => prev.map(p => p.id === id ? { ...p, settings } : p));
+    const safeSettings = { ...DEFAULT_SETTINGS, ...(settings || {}) };
+    setPhotos(prev => prev.map(p => p.id === id ? { ...p, settings: safeSettings } : p));
   }, []);
 
   // Debounced Firestore sync
@@ -446,9 +453,18 @@ export default function App() {
     const photo = photos.find(p => p.id === selectedPhotoId);
     if (!photo || photo.id.length < 10) return; // Skip samples
 
+    const cleanSettings: Record<string, number> = { ...DEFAULT_SETTINGS, ...(photo.settings || {}) };
+    Object.keys(DEFAULT_SETTINGS).forEach((key) => {
+      const k = key as keyof LightingSettings;
+      const val = cleanSettings[k];
+      if (val === undefined || val === null || typeof val !== 'number' || isNaN(val)) {
+        cleanSettings[k] = DEFAULT_SETTINGS[k];
+      }
+    });
+
     const timer = setTimeout(async () => {
       try {
-        await updateDoc(doc(db, "photos", photo.id), { settings: photo.settings });
+        await updateDoc(doc(db, "photos", photo.id), { settings: cleanSettings });
       } catch (error) {
         console.error("Error syncing settings:", error);
       }
@@ -655,31 +671,66 @@ export default function App() {
     setSelectedPhotoId(photos[nextIndex].id);
   };
 
-  const downloadImage = async () => {
+  const downloadImage = async (options: { format: 'jpeg' | 'png' | 'webp', quality: number, maxWidth: number }) => {
     if (!selectedPhoto) return;
+    setIsExporting(true);
     
     const canvas = document.createElement('canvas');
     const img = new Image();
     img.crossOrigin = "anonymous";
     
-    toast.promise(new Promise(async (resolve, reject) => {
-      img.onload = () => {
-        // Real pixel manipulation on canvas
-        renderProcessedToCanvas(img, canvas, selectedPhoto.settings, 0, 0);
-        
-        const link = document.createElement('a');
-        link.download = `aura-${selectedPhoto.title.toLowerCase().replace(/\s+/g, '-')}.png`;
-        link.href = canvas.toDataURL('image/png');
-        link.click();
-        resolve(true);
-      };
-      img.onerror = reject;
-      img.src = fixImageUrl(selectedPhoto.url);
-    }), {
-      loading: 'Procesando píxeles y preparando descarga...',
-      success: 'Fotografía procesada y descargada con éxito',
-      error: 'Error al procesar la imagen para descargar.'
-    });
+    // Calcular dimensiones según preset de tamaño
+    const getTargetDimensions = (naturalWidth: number, naturalHeight: number) => {
+      if (options.maxWidth === 0) return { w: 0, h: 0 }; // 0 = original en renderProcessedToCanvas
+      if (options.maxWidth === -1) { // half
+        return { w: Math.round(naturalWidth / 2), h: Math.round(naturalHeight / 2) };
+      }
+      if (options.maxWidth === -2) { // quarter
+        return { w: Math.round(naturalWidth / 4), h: Math.round(naturalHeight / 4) };
+      }
+      // maxWidth específico (ej: 2048)
+      if (naturalWidth > options.maxWidth) {
+        const scale = options.maxWidth / naturalWidth;
+        return { w: options.maxWidth, h: Math.round(naturalHeight * scale) };
+      }
+      return { w: 0, h: 0 }; // ya es más pequeña que el máximo, usar original
+    };
+
+    try {
+      await toast.promise(new Promise<void>((resolve, reject) => {
+        img.onload = async () => {
+          try {
+            const { w, h } = getTargetDimensions(img.naturalWidth, img.naturalHeight);
+            await renderProcessedToCanvas(img, canvas, selectedPhoto.settings, w, h);
+            
+            const mimeType = `image/${options.format}`;
+            const dataUrl = options.format === 'png' 
+              ? canvas.toDataURL('image/png')
+              : canvas.toDataURL(mimeType, options.quality);
+            
+            const extension = options.format === 'jpeg' ? 'jpg' : options.format;
+            const filename = `${selectedPhoto.title.replace(/\.[^/.]+$/, '').replace(/\s+/g, '-').toLowerCase()}-aura.${extension}`;
+            
+            const link = document.createElement('a');
+            link.download = filename;
+            link.href = dataUrl;
+            link.click();
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        };
+        img.onerror = reject;
+        img.src = fixImageUrl(selectedPhoto.url);
+      }), {
+        loading: 'Procesando píxeles en alta resolución...',
+        success: 'Imagen exportada correctamente',
+        error: 'Error al exportar la imagen'
+      });
+    } finally {
+      setIsExporting(false);
+      setShowExportModal(false);
+    }
   };
 
   return (
@@ -1112,7 +1163,8 @@ export default function App() {
                   <Button 
                     size="sm" 
                     className="h-8 md:h-9 bg-amber-600 hover:bg-amber-500 text-white"
-                    onClick={() => selectedPhoto && downloadImage()}
+                    onClick={() => setShowExportModal(true)}
+                    disabled={!selectedPhoto}
                   >
                     <Download className="w-3 h-3 md:mr-2" />
                     <span className="hidden md:inline">Exportar</span>
@@ -1493,6 +1545,13 @@ export default function App() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <ExportModal
+        open={showExportModal}
+        onClose={() => setShowExportModal(false)}
+        onExport={downloadImage}
+        isExporting={isExporting}
+      />
     </div>
   );
 }
